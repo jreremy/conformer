@@ -9,7 +9,7 @@ python train.py --data_dir=./data --train_set=train-clean-100 --test_set=test_cl
 ```
 ### Resume training from checkpoint
 ```
-python train.py --load_checkpoint --data_dir=./data --train_set=train-clean-100 --test_set=test_clean --checkpoint_path=model_best.pt
+python train.py --load_checkpoint --checkpoint_path=model_best.pt
 ```
 ### Train with mixed precision: 
 ```
