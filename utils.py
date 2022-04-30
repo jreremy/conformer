@@ -2,6 +2,7 @@ import torchaudio
 import torch
 import torch.nn as nn
 import os
+import random
 
 class TextTransform:
   ''' Map characters to integers and vice versa '''
@@ -11,7 +12,6 @@ class TextTransform:
       self.char_map[chr(char)] = i
     self.char_map["'"] = 26
     self.char_map[' '] = 27
-
     self.index_map = {} 
     for char, i in self.char_map.items():
       self.index_map[i] = char
@@ -51,6 +51,21 @@ def get_audio_transforms():
 
   return train_audio_transform, valid_audio_transform
 
+class BatchSampler(object):
+  ''' Sample contiguous, sorted indices. Leads to less padding and faster training. '''
+  def __init__(self, sorted_inds, batch_size):
+    self.sorted_inds = sorted_inds
+    self.batch_size = batch_size
+  
+  def __iter__(self):
+    inds = self.sorted_inds.copy()
+    while len(inds):
+      to_take = min(self.batch_size, len(inds))
+      start_ind = random.randint(0, len(inds) - to_take)
+      batch_inds = inds[start_ind:start_ind + to_take]
+      del inds[start_ind:start_ind + to_take]
+      yield batch_inds
+
 def preprocess_example(data, data_type="train"):
   ''' Process raw LibriSpeech examples '''
   text_transform = TextTransform()
@@ -81,7 +96,12 @@ def preprocess_example(data, data_type="train"):
   spectrograms = nn.utils.rnn.pad_sequence(spectrograms, batch_first=True)
   labels = nn.utils.rnn.pad_sequence(labels, batch_first=True)
 
-  return spectrograms, labels, input_lengths, label_lengths, references
+  # Padding mask (batch_size, time, time)
+  mask = torch.ones(spectrograms.shape[0], spectrograms.shape[1], spectrograms.shape[1])
+  for i, l in enumerate(input_lengths):
+    mask[i, :, :l] = 0
+
+  return spectrograms, labels, input_lengths, label_lengths, references, mask.bool()
 
 class TransformerLrScheduler():
   '''
@@ -102,7 +122,7 @@ class TransformerLrScheduler():
         param_group['lr'] = lr
 
   def _get_lr(self):
-    return self.multiplier * (self.d_model ** -0.5) * min(self.n_steps ** (-0.5), self.n_steps * self.warmup_steps ** (-1.5))
+    return self.multiplier * (self.d_model ** -0.5) * min(self.n_steps ** (-0.5), self.n_steps * (self.warmup_steps ** (-1.5)))
 
 
 def model_size(model, name):

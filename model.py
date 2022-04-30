@@ -43,7 +43,7 @@ class RelativeMultiHeadAttention(nn.Module):
     
     Inputs:
       x (Tensor): (batch_size, time, d_model)
-      mask (Tensor): Optional mask to zero out attention score at certain indices
+      mask (Tensor): (batch_size, time, time) Optional mask to zero out attention score at certain indices
     
     Outputs:
       Tensor (batch_size, time, d_model): Output tensor from the attention module.
@@ -72,7 +72,7 @@ class RelativeMultiHeadAttention(nn.Module):
     torch.nn.init.xavier_uniform_(self.v)
 
     # etc
-    self.layer_norm = nn.LayerNorm(d_model)
+    self.layer_norm = nn.LayerNorm(d_model, eps=6.1e-5)
     self.positional_encoder = positional_encoder
     self.dropout = nn.Dropout(dropout)
 
@@ -97,9 +97,10 @@ class RelativeMultiHeadAttention(nn.Module):
     attn = (AC + BD) / math.sqrt(self.d_model)
 
     #Mask before softmax with large negative number
-    if mask:
+    if mask is not None:
       mask = mask.unsqueeze(1)
-      attn.masked_fill_(mask, -1e9)
+      mask_value = -1e+30 if attn.dtype == torch.float32 else -1e+4
+      attn.masked_fill_(mask, mask_value)
 
     #Softmax
     attn = F.softmax(attn, -1)
@@ -137,19 +138,21 @@ class ConvBlock(nn.Module):
     
     Inputs:
       x (Tensor): (batch_size, time, d_model)
+      mask: Unused
     
     Outputs:
       Tensor (batch_size, time, d_model): Output tensor from the convolution module
   
   '''
-  def __init__(self, d_model=144, kernel_size=32, dropout=0.1):
+  def __init__(self, d_model=144, kernel_size=31, dropout=0.1):
     super(ConvBlock, self).__init__()
-    self.layer_norm = nn.LayerNorm(d_model)
+    self.layer_norm = nn.LayerNorm(d_model, eps=6.1e-5)
+    kernel_size=31
     self.module = nn.Sequential(
       nn.Conv1d(in_channels=d_model, out_channels=d_model * 2, kernel_size=1), # first pointwise with 2x expansion
       nn.GLU(dim=1),
       nn.Conv1d(in_channels=d_model, out_channels=d_model, kernel_size=kernel_size, padding='same', groups=d_model), # depthwise
-      nn.BatchNorm1d(d_model),
+      nn.BatchNorm1d(d_model, eps=6.1e-5),
       nn.SiLU(), # swish activation
       nn.Conv1d(in_channels=d_model, out_channels=d_model, kernel_size=1), # second pointwise
       nn.Dropout(dropout)
@@ -172,6 +175,7 @@ class FeedForwardBlock(nn.Module):
     
     Inputs:
       x (Tensor): (batch_size, time, d_model)
+      mask: Unused
     
     Outputs:
       Tensor (batch_size, time, d_model): Output tensor from the feed-forward module
@@ -180,7 +184,7 @@ class FeedForwardBlock(nn.Module):
   def __init__(self, d_model=144, expansion=4, dropout=0.1):
     super(FeedForwardBlock, self).__init__()
     self.module = nn.Sequential(
-      nn.LayerNorm(d_model),
+      nn.LayerNorm(d_model, eps=6.1e-5),
       nn.Linear(d_model, d_model * expansion), # expand to d_model * expansion
       nn.SiLU(), # swish activation
       nn.Dropout(dropout),
@@ -190,32 +194,6 @@ class FeedForwardBlock(nn.Module):
 
   def forward(self, x):
     return self.module(x)
-
-class ResidualConnection(nn.Module):
-  '''
-    Wraps a module with a residual connection.
-    Outputs computed as: ( inputs * input_weight ) + ( module(inputs) * output_weight )
-
-    Parameters:
-      module (nn.Module): Module
-      input_weight (float): Weight applied to module inputs
-      output_weight (float): Weight applied to module outputs
-    
-    Inputs:
-      x (Tensor): (batch_size, time, d_model)
-    
-    Outputs:
-      Tensor (batch_size, time, d_model): Output tensor from the residual connection.
-  
-  '''
-  def __init__(self, module, input_weight=1., output_weight=1.):
-    super(ResidualConnection, self).__init__()
-    self.input_weight = input_weight
-    self.output_weight = output_weight
-    self.module = module
-
-  def forward(self, x):
-    return (x * self.input_weight) + (self.module(x) * self.output_weight)
 
 class Conv2dSubsampling(nn.Module):
   '''
@@ -263,6 +241,7 @@ class ConformerBlock(nn.Module):
     
     Inputs:
       x (Tensor): (batch_size, time, d_model)
+      mask (Tensor): (batch_size, time, time) Optional mask to zero out attention score at certain indices
     
     Outputs:
       Tensor (batch_size, time, d_model): Output tensor from the conformer block.
@@ -271,7 +250,7 @@ class ConformerBlock(nn.Module):
   def __init__(
           self,
           d_model=144,
-          conv_kernel_size=32, 
+          conv_kernel_size=31,
           feed_forward_residual_factor=.5,
           feed_forward_expansion_factor=4,
           num_heads=4,
@@ -279,27 +258,19 @@ class ConformerBlock(nn.Module):
           dropout=0.1,
   ):
     super(ConformerBlock, self).__init__()
+    self.residual_factor = feed_forward_residual_factor
+    self.ff1 = FeedForwardBlock(d_model, feed_forward_expansion_factor, dropout)
+    self.attention = RelativeMultiHeadAttention(d_model, num_heads, dropout, positional_encoder)
+    self.conv_block = ConvBlock(d_model, conv_kernel_size, dropout)
+    self.ff2 = FeedForwardBlock(d_model, feed_forward_expansion_factor, dropout)
+    self.layer_norm = nn.LayerNorm(d_model, eps=6.1e-5)
 
-    self.module = nn.Sequential(
-      ResidualConnection(
-        FeedForwardBlock(d_model, feed_forward_expansion_factor, dropout),
-        output_weight=feed_forward_residual_factor # half-step residual connection for feed-forward blocks
-      ),
-      ResidualConnection(
-        RelativeMultiHeadAttention(d_model, num_heads, dropout, positional_encoder)
-      ),
-      ResidualConnection(
-        ConvBlock(d_model, conv_kernel_size, dropout)
-      ),
-      ResidualConnection(
-        FeedForwardBlock(d_model, feed_forward_expansion_factor, dropout),
-        output_weight=feed_forward_residual_factor # half-step residual connection for feed-forward blocks
-      ),
-      nn.LayerNorm(d_model)
-    )
-
-  def forward(self, x):
-    return self.module(x)
+  def forward(self, x, mask=None):
+    x = x + (self.residual_factor * self.ff1(x))
+    x = x + self.attention(x, mask=mask)
+    x = x + self.conv_block(x)
+    x = x + (self.residual_factor * self.ff2(x))
+    return self.layer_norm(x)
 
 
 class ConformerEncoder(nn.Module):
@@ -318,9 +289,11 @@ class ConformerEncoder(nn.Module):
     
     Inputs:
       x (Tensor): input spectrogram of dimension (batch_size, time, d_input)
+      mask (Tensor): (batch_size, time, time) Optional mask to zero out attention score at certain indices
     
     Outputs:
       Tensor (batch_size, time, d_model): Output tensor from the conformer encoder
+
   
   '''
   def __init__(
@@ -328,7 +301,7 @@ class ConformerEncoder(nn.Module):
           d_input=80,
           d_model=144,
           num_layers=16,
-          conv_kernel_size=32, 
+          conv_kernel_size=31, 
           feed_forward_residual_factor=.5,
           feed_forward_expansion_factor=4,
           num_heads=4,
@@ -351,13 +324,19 @@ class ConformerEncoder(nn.Module):
             dropout=dropout,
         ) for _ in range(num_layers)])
 
-  def forward(self, x):
-    # (batch_size, time, freq (d_input)) = x.shape 
+  def forward(self, x, mask=None):
     x = self.conv_subsample(x)
+    if mask is not None:
+      mask = mask[:, :-2:2, :-2:2] #account for subsampling
+      mask = mask[:, :-2:2, :-2:2] #account for subsampling
+      assert mask.shape[1] == x.shape[1], f'{mask.shape} {x.shape}'
+    
     x = self.linear_proj(x)
     x = self.dropout(x)
+    
     for layer in self.layers:
-      x = layer(x)
+      x = layer(x, mask=mask)
+    
     return x
 
 
@@ -380,7 +359,7 @@ class LSTMDecoder(nn.Module):
   '''
   def __init__(self, d_encoder=144, d_decoder=320, num_layers=1, num_classes=29):
     super(LSTMDecoder, self).__init__()
-    self.lstm = nn.LSTM(input_size=d_encoder, hidden_size=d_decoder, num_layers=num_layers)
+    self.lstm = nn.LSTM(input_size=d_encoder, hidden_size=d_decoder, num_layers=num_layers, batch_first=True)
     self.linear = nn.Linear(d_decoder, num_classes)
 
   def forward(self, x):
