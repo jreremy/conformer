@@ -8,7 +8,7 @@ class TextTransform:
   ''' Map characters to integers and vice versa '''
   def __init__(self):
     self.char_map = {}  
-    for i, char in enumerate(range(97, 123)):
+    for i, char in enumerate(range(65, 91)):
       self.char_map[chr(char)] = i
     self.char_map["'"] = 26
     self.char_map[' '] = 27
@@ -85,7 +85,7 @@ def preprocess_example(data, data_type="train"):
 
     # Labels 
     references.append(utterance) # Actual Sentence
-    label = torch.Tensor(text_transform.text_to_int(utterance.lower())) # Integer representation of sentence
+    label = torch.Tensor(text_transform.text_to_int(utterance)) # Integer representation of sentence
     labels.append(label)
 
     # Lengths (time)
