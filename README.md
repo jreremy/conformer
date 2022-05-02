@@ -1,5 +1,5 @@
 # Pytorch Conformer
-Pytorch implementation of [conformer](https://arxiv.org/abs/2005.08100) model. Includes code to train/validate a speech recognition model on the LibriSpeech dataset.
+Pytorch implementation of [conformer](https://arxiv.org/abs/2005.08100) model with training script for end-to-end speech recognition on the LibriSpeech dataset.
 
 ## Usage
 
@@ -15,7 +15,8 @@ python train.py --load_checkpoint --checkpoint_path=model_best.pt
 ```
 python train.py --use_amp
 ```
-For a full list of command line arguments see train.py. For valid train_set and test_set values, see torchaudio's [LibriSpeech dataset](https://pytorch.org/audio/stable/datasets.html). The model parameters default to the Conformer (S) configuration. For the Conformer (M) and Conformer (L) models, refer to the table below: 
+
+For a full list of command line arguments, run ```python train.py --help```. [Smart batching](https://mccormickml.com/2020/07/29/smart-batching-tutorial/) is used by default but may need to be disabled for larger datasets. For valid train_set and test_set values, see torchaudio's [LibriSpeech dataset](https://pytorch.org/audio/stable/datasets.html). The model parameters default to the Conformer (S) configuration. For the Conformer (M) and Conformer (L) models, refer to the table below: 
 
 <img src="https://jwink-public.s3.amazonaws.com/conformer-params.png" width="500"/>
 
@@ -26,7 +27,6 @@ For a full list of command line arguments see train.py. For valid train_set and 
 ## TODO:
 - Language Model (LM) implementation
 - Multi-GPU support
-- Smart batching
 - Support for full LibriSpeech960h train set
 - Support for other decoders (ie: transformer decoder, etc.)
 
